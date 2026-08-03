@@ -76,7 +76,7 @@ class Client:
                     self._rotate_ua()
                 continue
 
-            # 触发限流 / 风控 / 服务器错误 → 退避重试
+            # 触发限流 / 风控 / 服务器错误 -> 退避重试
             if resp.status_code in (429, 403) or resp.status_code >= 500:
                 last_resp = resp
                 if attempt < retries - 1:
@@ -103,7 +103,7 @@ def get_book(client: Client, book_id: str) -> Novel:
     try:
         return _get_book_via_api(client, book_id)
     except Exception as e:  # noqa: BLE001
-        print(f"⚠️ 目录API失败({e})，改用目录页解析...")
+        print(f"[!] 目录API失败({e})，改用目录页解析...")
         return _get_book_via_page(client, book_id)
 
 

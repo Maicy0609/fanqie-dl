@@ -2,5 +2,6 @@ __pycache__/
 *.pyc
 .venv/
 books/
+config.json
 *.txt
 !requirements.txt

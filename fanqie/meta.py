@@ -125,7 +125,7 @@ def _info_to_meta(book_id: str, info: dict, chapters: list) -> BookMeta:
     tags = info.get("tags") or parse_tags(info)
     status = info.get("status")
     status_text = ("连载中" if str(status) == "1" else "已完结") if status else ""
-    # 页面兜底格式 "29.2万字" → 292000
+    # 页面兜底格式 "29.2万字" -> 292000
     total_words = _ts(info.get("wordNumber"))
     if total_words is None and info.get("wordNumberText"):
         import re
