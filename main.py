@@ -3,12 +3,14 @@
 """fanqie-dl 命令行入口
 
 用法:
-    python main.py <书ID或链接>                    下载全书
-    python main.py <书ID> --start 1 --end 10       下载 1~10 章
-    python main.py <书ID> --meta                   查看书籍/章节元数据（不下载正文）
-    python main.py <书ID> --list                   仅列出章节
-    python main.py <书ID> --cover                  下载时同时保存封面
-    python main.py <书ID> --out ./books            指定输出目录
+    python main.py <书ID或链接>                         下载全书
+    python main.py <书ID> --start 1 --end 10            下载 1~10 章
+    python main.py --search 关键词                      搜索选书（一条龙）
+    python main.py --search 关键词 --pick 2             直接下载第2个结果
+    python main.py <书ID> --meta                        查看书籍/章节元数据
+    python main.py <书ID> --list                        仅列出章节
+    python main.py <书ID> --cover                       下载时同时保存封面
+    python main.py <书ID> --out ./books                 指定输出目录
     python main.py <书ID> --delay-min 2 --delay-max 5   调节请求间隔(秒)
 """
 import argparse
@@ -24,6 +26,7 @@ from fanqie.downloader import (
 )
 from fanqie.headers import page_headers
 from fanqie.meta import build_meta, fmt_time, render_summary
+from fanqie.search import search_books
 
 BOOK_ID_HELP = "小说 ID，或包含 book_id= 的分享链接"
 
@@ -34,6 +37,10 @@ def sanitize(name: str) -> str:
                       ("*", "＊")]:
         name = name.replace(bad, good)
     return name
+
+
+def _status_text(s: str) -> str:
+    return "已完结" if s == "0" else ("连载中" if s == "1" else s)
 
 
 def cmd_list(novel) -> None:
@@ -70,8 +77,12 @@ def save_cover(client: Client, url: str, path: Path) -> bool:
     return False
 
 
-def cmd_download(client: Client, novel, start: int, end: int,
-                 out_dir: Path, with_cover: bool) -> None:
+def cmd_download(client: Client, book_id: str, start: int, end: int,
+                 out_dir: Path, with_cover: bool,
+                 title_hint: str | None = None) -> None:
+    novel = get_book(client, book_id)  # 自带目录API→页面 双兜底
+    if novel.title.startswith("book_") and title_hint:
+        novel.title = title_hint  # 搜索结果带回来的书名兜底
     total = len(novel.chapters)
     start = max(1, start)
     end = min(total, end) if end else total
@@ -83,9 +94,8 @@ def cmd_download(client: Client, novel, start: int, end: int,
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{sanitize(novel.title)}.txt"
 
-    # 书籍元数据头（APP 可见信息）
     try:
-        meta = build_meta(client, novel.book_id)
+        meta = build_meta(client, book_id)  # 书籍信息自带兜底
         header = render_summary(meta)
     except Exception:  # noqa: BLE001
         meta = None
@@ -94,7 +104,7 @@ def cmd_download(client: Client, novel, start: int, end: int,
 
     ok, skipped, failed = 0, 0, 0
     t0 = time.time()
-    referer = None  # 真实浏览器翻页 Referer 链
+    referer = None
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(header + "\n\n")
         f.write("=" * 40 + "\n")
@@ -120,7 +130,6 @@ def cmd_download(client: Client, novel, start: int, end: int,
                 failed += 1
                 print(f"\n❌ 第{idx}章《{ch['title']}》失败: {e}")
 
-    # 封面
     cover_path = None
     if with_cover and meta and meta.cover_url:
         cover_path = out_dir / f"{sanitize(novel.title)}_cover.jpg"
@@ -139,9 +148,55 @@ def cmd_download(client: Client, novel, start: int, end: int,
         print("提示: 失败章节可缩小范围重试: --start N --end N")
 
 
+def cmd_search(client: Client, keyword: str, pick: int | None,
+               args) -> None:
+    """搜索选书下载一条龙"""
+    print(f"🔍 搜索《{keyword}》...")
+    try:
+        results = search_books(client, keyword)  # 双端点自动回退
+    except Exception as e:  # noqa: BLE001
+        print(f"❌ 搜索失败: {e}")
+        sys.exit(1)
+    if not results:
+        print("❌ 没有搜索到相关结果")
+        sys.exit(1)
+
+    print(f"\n共 {len(results)} 个结果：")
+    for i, r in enumerate(results, 1):
+        status = _status_text(str(r.get("creation_status", "")))
+        score = r.get("score") or "-"
+        words = f"{int(r['word_number']):,}字" if r.get("word_number") else ""
+        print(f"  {i:>2}. 《{r.get('title')}》 {r.get('author') or ''} "
+              f"[{r.get('category') or ''}] {status} 评分{score} {words}")
+        print(f"      ID: {r.get('book_id')}")
+        ab = (r.get("abstract") or "").strip().replace("\n", " ")
+        if ab:
+            print(f"      简介: {ab[:80]}...")
+
+    # 选书
+    if pick:
+        idx = pick
+    else:
+        try:
+            inp = input("\n输入序号下载该书（回车退出）: ").strip()
+            idx = int(inp) if inp else 0
+        except (EOFError, KeyboardInterrupt):
+            idx = 0
+    if not (1 <= idx <= len(results)):
+        print("已取消。")
+        return
+    picked = results[idx - 1]
+    print(f"\n📥 选择下载《{picked.get('title')}》 (ID={picked.get('book_id')})")
+    cmd_download(client, picked["book_id"], args.start, args.end,
+                 Path(args.out), args.cover, picked.get("title"))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="番茄小说下载器 (fanqie-dl)")
-    ap.add_argument("book", help=BOOK_ID_HELP)
+    ap.add_argument("book", nargs="?", help=BOOK_ID_HELP)
+    ap.add_argument("--search", metavar="关键词", help="搜索选书（一条龙）")
+    ap.add_argument("--pick", type=int, default=0,
+                    help="与--search联用：直接下载第N个结果")
     ap.add_argument("--start", type=int, default=1, help="起始章节（默认1）")
     ap.add_argument("--end", type=int, default=0, help="结束章节（默认全书）")
     ap.add_argument("--meta", action="store_true",
@@ -161,13 +216,22 @@ def main() -> None:
         print("❌ --delay-max 不能小于 --delay-min")
         sys.exit(1)
 
+    client = Client(args.delay_min, args.delay_max)
+
+    # 搜索模式：无需书ID
+    if args.search:
+        cmd_search(client, args.search, args.pick, args)
+        return
+
+    if not args.book:
+        ap.print_help()
+        sys.exit(1)
+
     try:
         book_id = parse_book_id(args.book)
     except ValueError as e:
         print(e)
         sys.exit(1)
-
-    client = Client(args.delay_min, args.delay_max)
 
     if args.meta:
         print(f"正在获取《{book_id}》元数据...")
@@ -183,7 +247,7 @@ def main() -> None:
     if args.list:
         cmd_list(novel)
         return
-    cmd_download(client, novel, args.start, args.end, Path(args.out),
+    cmd_download(client, book_id, args.start, args.end, Path(args.out),
                  args.cover)
 
 

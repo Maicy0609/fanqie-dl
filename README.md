@@ -48,12 +48,30 @@ python3 -m venv .venv
 # 查看书籍/章节元数据（书名/作者/封面/简介/标签/总字数/阅读量/状态/更新时间/章节上传时间）
 .venv/bin/python main.py 7646230028388142104 --meta
 
+# 搜索选书下载一条龙（官方 App 接口，无需签名）
+.venv/bin/python main.py --search 十日终焉
+.venv/bin/python main.py --search 你写的小说 --pick 1        # 直接下载第1个结果
+.venv/bin/python main.py --search 你写的小说 --pick 1 --end 10   # 只下前10章
+
 # 下载时保存封面图
 .venv/bin/python main.py 7646230028388142104 --cover
 ```
 
 输出：`books/《书名》.txt`（含书籍信息头 + 每章字数/更新时间），
 `--cover` 时额外保存 `《书名》_cover.jpg` 封面。
+
+## 🔁 冗余设计（每步都有备用方案）
+
+| 环节 | 主方案 | 备用方案 |
+|---|---|---|
+| 搜索 | `novel.snssdk.com`（官方 App 接口） | `api-lf.fanqiesdk.com`（官方 SDK 网关），自动回退 |
+| 目录 | `/api/reader/directory/detail` | 目录页 SSR 解析（原项目同款选择器） |
+| 书籍信息 | `/api/book/info` | 目录页 SSR 解析（标题/作者/标签/字数/状态/简介/封面） |
+| 章节正文 | 章节页 SSR + 字体解密 | 内容不足时标记跳过，不中断 |
+| 章节字数 | 章节页 SSR `chapterWordNumber` | 下载正文时顺带获取，零额外请求 |
+
+> ⚠️ 搜索接口是番茄 App 内部接口（社区发现，非官方文档），随时可能加签名或下线；
+> 失效时请改用已知书 ID 直接下载。
 
 ## 📊 可获取的元数据（与 APP 版一致）
 

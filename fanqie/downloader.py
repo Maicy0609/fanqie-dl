@@ -99,7 +99,16 @@ class Novel:
 
 
 def get_book(client: Client, book_id: str) -> Novel:
-    """通过目录 API 获取书名与章节列表（无需登录/签名）"""
+    """获取书名与章节列表（主: 目录API；备: 目录页解析）"""
+    try:
+        return _get_book_via_api(client, book_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠️ 目录API失败({e})，改用目录页解析...")
+        return _get_book_via_page(client, book_id)
+
+
+def _get_book_via_api(client: Client, book_id: str) -> Novel:
+    """主方案：目录 API（无需登录/签名）"""
     resp = client.get(DIR_API.format(book_id=book_id), kind="api",
                       referer=HOME_URL)
     data = resp.json()
@@ -108,6 +117,29 @@ def get_book(client: Client, book_id: str) -> Novel:
     d = data["data"]
     chapters = [c for vol in d.get("chapterListWithVolume", []) for c in vol]
     title = d.get("bookName") or _fetch_page_title(client, book_id)
+    return Novel(book_id, title, chapters)
+
+
+def _get_book_via_page(client: Client, book_id: str) -> Novel:
+    """备方案：目录页 SSR 解析（原项目同款选择器，实测可用）"""
+    resp = client.get(PAGE_URL.format(book_id=book_id), kind="page",
+                      referer=HOME_URL)
+    resp.raise_for_status()
+    ele = etree.HTML(resp.text)
+    titles = ele.xpath("//h1/text()")
+    title = titles[0].strip() if titles else f"book_{book_id}"
+    chapters = []
+    for a in ele.xpath('//div[contains(@class, "chapter")]//a'):
+        href = a.xpath("@href")
+        text = "".join(a.xpath(".//text()")).strip()
+        if href and text:
+            item_id = href[0].split("/")[-1].split("?")[0]
+            if item_id.isdigit():
+                chapters.append({
+                    "itemId": item_id, "title": text, "needPay": 0,
+                })
+    if not chapters:
+        raise RuntimeError("目录页未解析到章节")
     return Novel(book_id, title, chapters)
 
 

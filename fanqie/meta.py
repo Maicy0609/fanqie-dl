@@ -14,7 +14,7 @@ from datetime import datetime
 
 from lxml import etree
 
-from .downloader import DIR_API, HOME_URL, HOST, Client
+from .downloader import DIR_API, HOME_URL, HOST, Client, get_book
 
 BOOK_INFO_API = f"https://{HOST}/api/book/info?bookId={{book_id}}"
 PAGE_URL = f"https://{HOST}/page/{{book_id}}"
@@ -75,6 +75,41 @@ def fetch_book_info(client: Client, book_id: str) -> dict:
     return data.get("data") or {}
 
 
+def _parse_catalog_meta(client: Client, book_id: str) -> dict:
+    """备方案：从目录页 SSR 解析基础元数据（标题/作者/标签/字数/状态/简介/封面）"""
+    resp = client.get(PAGE_URL.format(book_id=book_id), kind="page",
+                      referer=HOME_URL)
+    resp.raise_for_status()
+    ele = etree.HTML(resp.text)
+    info = {"bookId": book_id}
+    t = ele.xpath("//h1/text()")
+    if t:
+        info["bookName"] = t[0].strip()
+    a = ele.xpath("//span[contains(@class, 'author-name-text')]/text()")
+    if a:
+        info["authorName"] = a[0].strip()
+    tags = [s.strip() for s in
+            ele.xpath("//div[contains(@class, 'info-label')]//span/text()")]
+    # 过滤掉状态词（连载中/已完结）
+    status_words = {"连载中", "已完结"}
+    info["tags"] = [x for x in tags if x not in status_words] or tags
+    st = ele.xpath("//span[contains(@class, 'info-label-yellow')]/text()")
+    if st:
+        info["status"] = "1" if "连载" in st[0] else "0"
+    ab = "".join(ele.xpath(
+        "//div[contains(@class, 'page-abstract-content')]//text()")).strip()
+    if ab:
+        info["abstract"] = ab
+    wc = "".join(ele.xpath(
+        "//div[contains(@class, 'info-count-word')]//text()")).strip()
+    if wc:
+        info["wordNumberText"] = wc
+    cv = ele.xpath("//meta[@property='og:image']/@content")
+    if cv:
+        info["cover_url"] = cv[0]
+    return info
+
+
 def parse_tags(info: dict) -> list:
     """解析 categoryV2（JSON 字符串）中的标签名"""
     raw = info.get("categoryV2") or "[]"
@@ -86,17 +121,29 @@ def parse_tags(info: dict) -> list:
 
 
 def _info_to_meta(book_id: str, info: dict, chapters: list) -> BookMeta:
+    # 兼容两种来源：API 格式(thumbUri/categoryV2/wordNumber) 与 页面格式(cover_url/tags/wordNumberText)
+    tags = info.get("tags") or parse_tags(info)
+    status = info.get("status")
+    status_text = ("连载中" if str(status) == "1" else "已完结") if status else ""
+    # 页面兜底格式 "29.2万字" → 292000
+    total_words = _ts(info.get("wordNumber"))
+    if total_words is None and info.get("wordNumberText"):
+        import re
+        m = re.match(r"([\d.]+)\s*万", str(info["wordNumberText"]))
+        if m:
+            total_words = int(float(m.group(1)) * 10000)
     return BookMeta(
         book_id=book_id,
         title=info.get("bookName") or f"book_{book_id}",
         author=info.get("authorName") or info.get("author") or "",
-        cover_url=info.get("thumbUri") or info.get("thumbUrl"),
+        cover_url=(info.get("cover_url") or info.get("thumbUri")
+                   or info.get("thumbUrl")),
         abstract=info.get("abstract"),
         description=info.get("description"),
-        tags=parse_tags(info),
-        total_words=_ts(info.get("wordNumber")),
+        tags=tags,
+        total_words=total_words,
         read_count=_ts(info.get("readCount")),
-        status="连载中" if info.get("status") == "1" else "已完结",
+        status=status_text,
         last_update=_ts(info.get("lastPublishTime")),
         last_chapter=info.get("lastChapterTitle") or "",
         chapter_count=len(chapters),
@@ -135,14 +182,26 @@ def parse_page_word_count(html: str) -> int | None:
 
 
 def build_meta(client: Client, book_id: str) -> BookMeta:
-    """聚合书籍信息 + 章节列表"""
-    chapters = fetch_directory(client, book_id)
+    """聚合书籍信息 + 章节列表（每步都带多级兜底）"""
+    # 章节列表: 主=目录API, 备=get_book(自带目录页兜底)
     try:
-        info = fetch_book_info(client, book_id)
-        return _info_to_meta(book_id, info, chapters)
-    except Exception:  # noqa: BLE001 书籍信息接口失败时降级
-        return BookMeta(book_id=book_id, title=f"book_{book_id}",
-                        chapter_count=len(chapters), chapters=chapters)
+        chapters = fetch_directory(client, book_id)
+    except Exception:  # noqa: BLE001
+        novel = get_book(client, book_id)
+        chapters = [
+            ChapterMeta(item_id=c["itemId"], order=i + 1, title=c["title"],
+                        need_pay=bool(c.get("needPay")))
+            for i, c in enumerate(novel.chapters)
+        ]
+    # 书籍信息: 主=/api/book/info, 备=目录页解析
+    for fn in (fetch_book_info, _parse_catalog_meta):
+        try:
+            info = fn(client, book_id)
+            return _info_to_meta(book_id, info, chapters)
+        except Exception:  # noqa: BLE001
+            continue
+    return BookMeta(book_id=book_id, title=f"book_{book_id}",
+                    chapter_count=len(chapters), chapters=chapters)
 
 
 def render_summary(meta: BookMeta) -> str:
