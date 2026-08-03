@@ -16,6 +16,7 @@
     python main.py --delay-min 1 --delay-max 3
 """
 import argparse
+import os
 import re
 import sys
 import time
@@ -53,6 +54,23 @@ def ask(prefix: str, default: str = "") -> str:
         return s if s else default
     try:
         return input(f"{prefix}: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        raise
+
+
+def clear_screen() -> None:
+    """清屏（Linux/Windows 通用）"""
+    os.system("cls" if os.name == "nt" else "clear")
+
+
+def divider(char: str = "=", width: int = 56) -> None:
+    print(char * width)
+
+
+def pause_return() -> None:
+    """提示按回车返回菜单"""
+    try:
+        input("-- 按回车返回菜单 --")
     except (EOFError, KeyboardInterrupt):
         raise
 
@@ -111,8 +129,10 @@ def cmd_download(client: Client, book_id: str, start: int, end: int,
     book_dir = base_dir / safe
     book_dir.mkdir(parents=True, exist_ok=True)
     out_path = book_dir / f"{safe}.txt"
+    divider("-")
     print(f"《{novel.title}》 共 {total} 章，下载 [{start}~{end}] 共 {len(sel)} 章")
     print(f"保存目录: {book_dir}")
+    divider("-")
 
     try:
         meta = build_meta(client, book_id)
@@ -212,6 +232,7 @@ def flow_search(client: Client, cfg: dict) -> None:
     if not kw:
         print("[i] 未输入关键词")
         return
+    divider("-")
     print(f"[i] 搜索《{kw}》...")
     try:
         results = search_books(client, kw)
@@ -221,16 +242,19 @@ def flow_search(client: Client, cfg: dict) -> None:
     if not results:
         print("[x] 没有搜索到相关结果")
         return
+    divider("-")
     print(f"共 {len(results)} 个结果：")
     for i, r in enumerate(results, 1):
         status = _status_text(str(r.get("creation_status", "")))
         score = r.get("score") or "-"
         ab = (r.get("abstract") or "").strip().replace("\n", " ")
-        print(f"  {i:>2}. 《{r.get('title')}》 {r.get('author') or ''} "
-              f"[{r.get('category') or ''}] {status} 评分{score}")
-        print(f"      ID: {r.get('book_id')}")
+        print(f"  [{i:>2}] 《{r.get('title')}》  {r.get('author') or ''}")
+        print(f"       分类:{r.get('category') or '-'}  状态:{status}  "
+              f"评分:{score}")
+        print(f"       ID: {r.get('book_id')}")
         if ab:
-            print(f"      简介: {ab[:80]}")
+            print(f"       简介: {ab[:70]}")
+        divider("-")
     try:
         sel = ask("选择序号下载(回车取消)")
     except (EOFError, KeyboardInterrupt):
@@ -274,10 +298,12 @@ def flow_batch(client: Client, cfg: dict) -> None:
             print("[!] 结束章节小于起始章节，按单章处理")
             bend = bstart
     except (EOFError, KeyboardInterrupt):
-        print("\n[i] 使用默认范围（全部章节）")
+        print("[i] 使用默认范围（全部章节）")
     ok_n, fail_n = 0, 0
     for i, spec in enumerate(lines, 1):
-        print(f"\n--- [{i}/{len(lines)}] {spec[:80]} ---")
+        divider("=")
+        print(f"[{i}/{len(lines)}] {spec[:70]}")
+        divider("-")
         try:
             ok = flow_download(client, cfg, spec, ask_dir=False,
                                ask_range=False, start=bstart, end=bend)
@@ -288,17 +314,23 @@ def flow_batch(client: Client, cfg: dict) -> None:
             ok_n += 1
         else:
             fail_n += 1
-    print(f"\n[批量完成] 成功 {ok_n} 本, 失败 {fail_n} 本")
+    divider("=")
+    print(f"[批量完成] 成功 {ok_n} 本, 失败 {fail_n} 本")
+    divider("=")
 
 
 def flow_settings(cfg: dict) -> None:
     while True:
-        print("\n=== 设置 ===")
-        print(f"  1. 请求间隔: {cfg['delay_min']}~{cfg['delay_max']} 秒")
-        print(f"  2. 默认保存目录: {cfg['save_dir']}")
-        print("  0. 返回")
+        clear_screen()
+        divider("=")
+        print("    设置")
+        divider("-")
+        print(f"  [1] 请求间隔: {cfg['delay_min']}~{cfg['delay_max']} 秒")
+        print(f"  [2] 默认保存目录: {cfg['save_dir']}")
+        print("  [0] 返回")
+        divider("-")
         try:
-            c = input("选择: ").strip()
+            c = input("  选择: ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\n返回")
             return
@@ -326,17 +358,26 @@ def flow_settings(cfg: dict) -> None:
 def cmd_interactive() -> None:
     cfg = load_config()
     client = Client(cfg["delay_min"], cfg["delay_max"])
-    print(f"fanqie-dl v{__version__}  (Ctrl+C 退出)")
     while True:
+        clear_screen()
+        divider("=")
+        print(f"    fanqie-dl v{__version__}  番茄小说下载器")
+        print("    交互模式（Ctrl+C 退出）")
+        divider("=")
+        print(f"    间隔 {cfg['delay_min']}~{cfg['delay_max']}s | "
+              f"保存目录: {cfg['save_dir']}")
+        divider("-")
+        print("  [1] 下载")
+        print("  [2] 搜索")
+        print("  [3] 批量下载")
+        print("  [4] 设置")
+        divider("-")
         try:
-            print("\n1. 下载")
-            print("2. 搜索")
-            print("3. 批量下载")
-            print("4. 设置")
-            c = input("请选择: ").strip()
+            c = input("  请选择: ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\n再见")
             return
+
         if c == "1":
             try:
                 spec = ask("输入书本ID或分享链接")
@@ -353,6 +394,14 @@ def cmd_interactive() -> None:
             flow_settings(cfg)
             cfg = load_config()
             client = Client(cfg["delay_min"], cfg["delay_max"])
+        else:
+            print("[!] 无效选择")
+            continue
+        try:
+            pause_return()
+        except (EOFError, KeyboardInterrupt):
+            print("\n再见")
+            return
 
 
 def main() -> None:
