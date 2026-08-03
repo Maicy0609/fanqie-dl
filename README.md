@@ -41,9 +41,27 @@ python3 -m venv .venv
 
 # 指定输出目录
 .venv/bin/python main.py 7646230028388142104 --out /path/to/books
+
+# 调节请求间隔（反封控节奏，默认 1~3 秒随机）
+.venv/bin/python main.py 7646230028388142104 --delay-min 2 --delay-max 5
 ```
 
 输出：`books/《书名》.txt`
+
+## 🛡️ 反封控设计（分层防御）
+
+| 检测层 | 对应措施 |
+|---|---|
+| TLS 指纹 | `curl_cffi impersonate="chrome"` 模拟浏览器 TLS 握手 |
+| User-Agent | 8 组真实桌面 UA 池随机轮换 |
+| 请求头 | 完整浏览器头：Accept / Accept-Language / Sec-Fetch-* / Sec-CH-UA 等 |
+| 频率检测 | 每次请求前随机延迟（默认 1~3s，可调 `--delay-min/--delay-max`） |
+| 限流(429/403) | 指数退避重试 + 尊重 `Retry-After` 响应头 |
+| Cookie 检测 | 复用 Session + 匿名 `novel_web_id` 访客 cookie |
+| 行为特征 | Referer 翻页链（本章 Referer 指向上一章，模拟真实阅读） |
+
+> ⚠️ 任何伪装都无法 100% 保证不被封控。请控制下载频率、只下载免费章节、
+> 勿用于商用或滥用，风险自负。
 
 ## 常见问题
 
