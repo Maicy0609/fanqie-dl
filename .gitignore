@@ -3,5 +3,6 @@ __pycache__/
 .venv/
 books/
 config.json
+cookie.json
 *.txt
 !requirements.txt

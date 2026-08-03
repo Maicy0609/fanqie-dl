@@ -9,6 +9,7 @@ DEFAULTS = {
     "delay_min": 1.0,     # 请求间隔下限（秒）
     "delay_max": 3.0,     # 请求间隔上限（秒）
     "save_dir": "books",  # 默认保存目录
+    "threads": 1,         # 下载线程数（1~10，>1 时每线程独立指纹/UA）
 }
 
 

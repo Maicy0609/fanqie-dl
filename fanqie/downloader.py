@@ -13,6 +13,7 @@ import re
 from curl_cffi import requests as req
 from lxml import etree
 
+from .cookies import get_or_create_cookie
 from .font_map import FONT_MAP
 from .headers import api_headers, page_headers, random_ua
 from .pacing import Pacing, backoff_sleep, parse_retry_after
@@ -25,6 +26,12 @@ DIR_API = f"https://{HOST}/api/reader/directory/detail?bookId={{book_id}}&aid=19
 PAGE_URL = f"https://{HOST}/page/{{book_id}}"
 READER_URL = f"https://{HOST}/reader/{{item_id}}"
 HOME_URL = f"https://{HOST}/"
+
+# 多线程下载时各线程使用的不同 TLS 指纹（curl_cffi impersonate 目标）
+IMPERSONATE_TARGETS = [
+    "chrome124", "chrome131", "chrome136", "chrome142", "edge101",
+    "firefox133", "firefox144", "safari17_0", "safari18_0", "chrome116",
+]
 
 
 def parse_book_id(text: str) -> str:
@@ -42,18 +49,27 @@ def parse_book_id(text: str) -> str:
 
 
 class Client:
-    """伪装浏览器身份的请求客户端"""
+    """伪装浏览器身份的请求客户端（每实例独立指纹/UA/cookie）"""
 
-    def __init__(self, delay_min: float = 1.0, delay_max: float = 3.0):
-        self.session = req.Session(impersonate="chrome")
+    def __init__(self, delay_min: float = 1.0, delay_max: float = 3.0,
+                 impersonate: str = "chrome"):
+        self.impersonate = impersonate
+        self.session = req.Session(impersonate=impersonate)
         self.pacing = Pacing(delay_min, delay_max)
-        # 匿名访客 cookie：模拟一个稳定的阅读会话
+        # 匿名访客 cookie：优先复用缓存，失败才重新生成
         self.ua = random_ua()
-        self.session.cookies.set(
-            "novel_web_id",
-            str(random.randint(10**18, 10**19 - 1)),
-            domain=HOST,
-        )
+        self._set_cookie(get_or_create_cookie())
+
+    def _set_cookie(self, value: str) -> None:
+        self.novel_web_id = value
+        self.session.cookies.set("novel_web_id", value, domain=HOST)
+
+    def regenerate_cookie(self) -> None:
+        """风控(403/429)时重新生成并保存新 cookie"""
+        from .cookies import save_cookie
+        value = str(random.randint(10**18, 10**19 - 1))
+        save_cookie(value)
+        self._set_cookie(value)
 
     def _rotate_ua(self) -> str:
         self.ua = random_ua()
@@ -61,9 +77,13 @@ class Client:
 
     def get(self, url: str, kind: str = "page", referer: str | None = None,
             retries: int = RETRIES):
-        """带节奏控制、退避重试的 GET 请求"""
+        """带节奏控制、退避重试的 GET 请求
+
+        风控(403/429)重试仍失败时，重新生成 cookie 再试最后一轮。
+        """
         last_resp = None
-        for attempt in range(retries):
+        cookie_rotated = False
+        for attempt in range(retries + (1 if not cookie_rotated else 0)):
             self.pacing.wait()  # 请求前随机延迟（限速）
             headers = (page_headers(self.ua, referer) if kind == "page"
                        else api_headers(self.ua, referer))
@@ -76,7 +96,7 @@ class Client:
                     self._rotate_ua()
                 continue
 
-            # 触发限流 / 风控 / 服务器错误 -> 退避重试
+            # 触发限流 / 风控 / 服务器错误 → 退避重试
             if resp.status_code in (429, 403) or resp.status_code >= 500:
                 last_resp = resp
                 if attempt < retries - 1:
@@ -84,6 +104,11 @@ class Client:
                         resp.headers.get("Retry-After"))
                     backoff_sleep(attempt, retry_after=retry_after)
                     self._rotate_ua()
+                    # 风控：重试耗尽前先换一次 cookie
+                    if (resp.status_code in (429, 403)
+                            and not cookie_rotated):
+                        self.regenerate_cookie()
+                        cookie_rotated = True
                 continue
             return resp
         raise RuntimeError(f"请求失败(重试{retries}次): {last_resp}")
