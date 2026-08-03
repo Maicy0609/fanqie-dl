@@ -460,7 +460,6 @@ def cmd_interactive() -> None:
         clear_screen()
         divider("=")
         print(f"    fanqie-dl v{__version__}  番茄小说下载器")
-        print("    交互模式（Ctrl+C 退出）")
         divider("=")
         print(f"    间隔 {cfg['delay_min']}~{cfg['delay_max']}s | "
               f"保存目录: {cfg['save_dir']}")
