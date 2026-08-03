@@ -31,6 +31,7 @@ from fanqie.downloader import (
 )
 from fanqie.headers import page_headers
 from fanqie.meta import build_meta, fmt_time, render_summary
+from fanqie.record import merge_orders, new_record, save_record, scan_records
 from fanqie.search import search_books
 
 BOOK_ID_HELP = "小说 ID，或包含 book_id= 的分享链接"
@@ -113,8 +114,13 @@ def save_cover(client: Client, url: str, path: Path) -> bool:
 
 def cmd_download(client: Client, book_id: str, start: int, end: int,
                  base_dir: Path, with_cover: bool = True,
-                 title_hint: str | None = None) -> bool:
-    """下载一本书到 base_dir/<书名>/ 目录（含 TXT 与封面）"""
+                 title_hint: str | None = None,
+                 append: bool = False, known_orders: list | None = None,
+                 override_dir: Path | None = None) -> bool:
+    """下载一本书到 base_dir/<书名>/ 目录（含 TXT、封面、JSON 记录）
+
+    append=True 时：追加新章节到旧文件末尾（连载更新用），不写头、不下载封面
+    """
     novel = get_book(client, book_id)
     if novel.title.startswith("book_") and title_hint:
         novel.title = title_hint
@@ -126,7 +132,7 @@ def cmd_download(client: Client, book_id: str, start: int, end: int,
     end = min(total, end) if end else total
     sel = novel.chapters[start - 1:end]
     safe = sanitize(novel.title)
-    book_dir = base_dir / safe
+    book_dir = override_dir or (base_dir / safe)
     book_dir.mkdir(parents=True, exist_ok=True)
     out_path = book_dir / f"{safe}.txt"
     divider("-")
@@ -134,20 +140,26 @@ def cmd_download(client: Client, book_id: str, start: int, end: int,
     print(f"保存目录: {book_dir}")
     divider("-")
 
+    meta = None
+    header = ""
     try:
-        meta = build_meta(client, book_id)
-        header = render_summary(meta)
+        meta = build_meta(client, book_id)  # 刷新状态（追加模式也要）
+        if not append:
+            header = render_summary(meta)
     except Exception:  # noqa: BLE001
-        meta = None
-        header = f"《{novel.title}》"
+        if not append:
+            header = f"《{novel.title}》"
     chapter_by_id = {c.item_id: c for c in meta.chapters} if meta else {}
 
     ok, skipped, failed = 0, 0, 0
     t0 = time.time()
     referer = None
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(header + "\n\n")
-        f.write("=" * 40 + "\n")
+    new_orders: list = []
+    mode = "a" if append else "w"
+    with open(out_path, mode, encoding="utf-8") as f:
+        if not append:
+            f.write(header + "\n\n")
+            f.write("=" * 40 + "\n")
         for idx, ch in tqdm(enumerate(sel, start), total=len(sel),
                             unit="章", ncols=70):
             try:
@@ -166,6 +178,8 @@ def cmd_download(client: Client, book_id: str, start: int, end: int,
                         f"〔字数:{words} | 更新:{pub}〕\n\n{content}\n")
                 f.flush()
                 ok += 1
+                order = int(ch.get("realChapterOrder") or idx)
+                new_orders.append(order)
             except Exception as e:  # noqa: BLE001
                 failed += 1
                 print(f"\n[x] 第{idx}章《{ch['title']}》失败: {e}")
@@ -179,8 +193,16 @@ def cmd_download(client: Client, book_id: str, start: int, end: int,
             cover_path = None
             print("\n[!] 封面下载失败（URL 可能已过期）")
 
+    # 更新下载记录 JSON
+    record = new_record(book_id, novel.title,
+                        meta.status if meta else "未知")
+    record["downloaded_orders"] = merge_orders(record, known_orders or [])
+    record["downloaded_orders"] = merge_orders(record, new_orders)
+    record_path = save_record(book_dir, safe, record)
+    print(f"\n[记录] {record_path}  (已下载 {len(record['downloaded_orders'])} 章)")
+
     cost = time.time() - t0
-    print(f"\n[完成] 成功 {ok} 章, 跳过 {skipped}, 失败 {failed}, 耗时 {cost:.0f}s")
+    print(f"[完成] 成功 {ok} 章, 跳过 {skipped}, 失败 {failed}, 耗时 {cost:.0f}s")
     print(f"[文件] {out_path}")
     if cover_path:
         print(f"[封面] {cover_path}")
@@ -266,6 +288,82 @@ def flow_search(client: Client, cfg: dict) -> None:
     picked = results[int(sel) - 1]
     flow_download(client, cfg, picked["book_id"],
                   title_hint=picked.get("title"))
+
+
+def flow_update(client: Client, cfg: dict) -> None:
+    """连载下载更新：扫描连载中书籍 -> 多选 -> 校验规则 -> 追加新章节"""
+    base = Path(cfg["save_dir"])
+    records = [r for r in scan_records(base) if r.get("status") == "连载中"]
+    if not records:
+        print("[i] 下载目录中没有标记为[连载中]的书籍")
+        return
+    divider("-")
+    print(f"发现 {len(records)} 本连载中书籍：")
+    for i, r in enumerate(records, 1):
+        n = len(r.get("downloaded_orders", []) or [])
+        print(f"  [{i}] 《{r.get('title')}》 已下载 {n} 章")
+    divider("-")
+    try:
+        sel = ask("选择序号(半角逗号分隔，回车=全部)", "")
+    except (EOFError, KeyboardInterrupt):
+        print("\n已取消")
+        return
+    if sel.strip():
+        idxs = [int(p) for p in sel.replace("，", ",").split(",")
+                if p.strip().isdigit()]
+        if not idxs:
+            print("[x] 序号无效")
+            return
+    else:
+        idxs = list(range(1, len(records) + 1))
+
+    ok_n, fail_n = 0, 0
+    for i in idxs:
+        if not (1 <= i <= len(records)):
+            print(f"[!] 跳过无效序号 {i}")
+            continue
+        try:
+            ok = update_one(client, cfg, records[i - 1])
+        except (EOFError, KeyboardInterrupt):
+            print("\n[i] 连载更新中断")
+            break
+        if ok:
+            ok_n += 1
+        else:
+            fail_n += 1
+    divider("=")
+    print(f"[连载更新完成] 成功 {ok_n} 本, 失败 {fail_n} 本")
+    divider("=")
+
+
+def update_one(client: Client, cfg: dict, rec: dict) -> bool:
+    """更新单本书：校验规则 -> 只下新章节 -> 追加到旧文件末尾"""
+    divider("=")
+    print(f"更新《{rec.get('title')}》 (ID={rec.get('book_id')})")
+    orders = sorted(rec.get("downloaded_orders", []) or [])
+    # 规则校验：必须从第1章开始且连续
+    if orders != list(range(1, len(orders) + 1)):
+        print("[x] 已下载章节不连续（未从第1章开始或中间缺章），"
+              "请先用 [1] 下载补全")
+        return False
+    try:
+        novel = get_book(client, rec["book_id"])
+    except Exception as e:  # noqa: BLE001
+        print(f"[x] 获取目录失败: {e}")
+        return False
+    total = len(novel.chapters)
+    # 规则校验：未下载到最后一章
+    if len(orders) >= total:
+        print(f"[i] 已是最新（共 {total} 章），无需更新")
+        return False
+    print(f"[i] 发现新章节 {len(orders) + 1}~{total} 共 {total - len(orders)} 章")
+    return cmd_download(
+        client, rec["book_id"], len(orders) + 1, total,
+        Path(cfg["save_dir"]), with_cover=False,
+        title_hint=rec.get("title"), append=True,
+        known_orders=orders,
+        override_dir=rec["_dir"],
+    )
 
 
 def flow_batch(client: Client, cfg: dict) -> None:
@@ -369,8 +467,9 @@ def cmd_interactive() -> None:
         divider("-")
         print("  [1] 下载")
         print("  [2] 搜索")
-        print("  [3] 批量下载")
-        print("  [4] 设置")
+        print("  [3] 连载下载更新")
+        print("  [4] 批量下载")
+        print("  [5] 设置")
         divider("-")
         try:
             c = input("  请选择: ").strip()
@@ -389,8 +488,10 @@ def cmd_interactive() -> None:
         elif c == "2":
             flow_search(client, cfg)
         elif c == "3":
-            flow_batch(client, cfg)
+            flow_update(client, cfg)
         elif c == "4":
+            flow_batch(client, cfg)
+        elif c == "5":
             flow_settings(cfg)
             cfg = load_config()
             client = Client(cfg["delay_min"], cfg["delay_max"])
