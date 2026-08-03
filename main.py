@@ -256,12 +256,12 @@ def flow_search(client: Client, cfg: dict) -> None:
             print(f"       简介: {ab[:70]}")
         divider("-")
     try:
-        sel = ask("选择序号下载(回车取消)")
+        sel = ask("选择序号下载(回车=第1个)", "1")
     except (EOFError, KeyboardInterrupt):
         print("\n已取消")
         return
     if not sel.isdigit() or not (1 <= int(sel) <= len(results)):
-        print("[i] 已取消")
+        print("[i] 序号无效，已取消")
         return
     picked = results[int(sel) - 1]
     flow_download(client, cfg, picked["book_id"],
@@ -465,12 +465,12 @@ def main() -> None:
             idx = args.pick
         else:
             try:
-                inp = input("输入序号下载该书（回车退出）: ").strip()
-                idx = int(inp) if inp else 0
+                inp = input("输入序号下载该书（回车=第1个）: ").strip()
+                idx = int(inp) if inp else 1
             except (EOFError, KeyboardInterrupt):
-                idx = 0
+                idx = 1
         if not (1 <= idx <= len(results)):
-            print("已取消。")
+            print("序号无效。")
             return
         picked = results[idx - 1]
         print(f"\n下载《{picked.get('title')}》 (ID={picked.get('book_id')})")
