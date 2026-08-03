@@ -126,13 +126,23 @@ def _fetch_page_title(client: Client, book_id: str) -> str:
 def fetch_chapter(client: Client, item_id: str,
                   referer: str | None = None) -> str:
     """抓取章节页 SSR，返回混淆正文（未解密）"""
+    return fetch_chapter_page(client, item_id, referer)[0]
+
+
+def fetch_chapter_page(client: Client, item_id: str,
+                       referer: str | None = None) -> tuple:
+    """抓取章节页，返回 (混淆正文, 章节字数 chapterWordNumber)"""
     resp = client.get(READER_URL.format(item_id=item_id), kind="page",
                       referer=referer or PAGE_URL)
     resp.raise_for_status()
-    ele = etree.HTML(resp.text)
+    html = resp.text
+    ele = etree.HTML(html)
     paras = ele.xpath(
         '//div[contains(@class, "muye-reader-content")]//p/text()')
-    return "\n".join(p.strip() for p in paras if p.strip())
+    raw = "\n".join(p.strip() for p in paras if p.strip())
+    m = re.search(r"chapterWordNumber[\"']?\s*[:=]\s*[\"']?(\d+)", html)
+    word_count = int(m.group(1)) if m else None
+    return raw, word_count
 
 
 def decrypt(text: str) -> str:
@@ -143,13 +153,23 @@ def decrypt(text: str) -> str:
 def download_chapter(client: Client, item_id: str,
                      referer: str | None = None) -> str:
     """抓取并解密单个章节，内容不足返回空串"""
-    raw = fetch_chapter(client, item_id, referer)
+    raw, _ = fetch_chapter_page(client, item_id, referer)
     if len(raw) < MIN_CONTENT:
         return ""
     return decrypt(raw)
 
 
+def download_chapter_with_info(client: Client, item_id: str,
+                               referer: str | None = None) -> tuple:
+    """抓取并解密章节，返回 (正文, 章节字数)"""
+    raw, word_count = fetch_chapter_page(client, item_id, referer)
+    if len(raw) < MIN_CONTENT:
+        return "", word_count
+    return decrypt(raw), word_count
+
+
 __all__ = [
-    "Client", "Novel", "get_book", "fetch_chapter", "decrypt",
-    "download_chapter", "parse_book_id",
+    "Client", "Novel", "get_book", "fetch_chapter", "fetch_chapter_page",
+    "decrypt", "download_chapter", "download_chapter_with_info",
+    "parse_book_id",
 ]

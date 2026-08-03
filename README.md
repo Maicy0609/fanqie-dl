@@ -44,9 +44,30 @@ python3 -m venv .venv
 
 # 调节请求间隔（反封控节奏，默认 1~3 秒随机）
 .venv/bin/python main.py 7646230028388142104 --delay-min 2 --delay-max 5
+
+# 查看书籍/章节元数据（书名/作者/封面/简介/标签/总字数/阅读量/状态/更新时间/章节上传时间）
+.venv/bin/python main.py 7646230028388142104 --meta
+
+# 下载时保存封面图
+.venv/bin/python main.py 7646230028388142104 --cover
 ```
 
-输出：`books/《书名》.txt`
+输出：`books/《书名》.txt`（含书籍信息头 + 每章字数/更新时间），
+`--cover` 时额外保存 `《书名》_cover.jpg` 封面。
+
+## 📊 可获取的元数据（与 APP 版一致）
+
+| 数据 | 来源 |
+|---|---|
+| 书名 / 作者 / 封面 | `/api/book/info` |
+| 简介（完整 abstract） | `/api/book/info` |
+| 标签（都市/校花/1v1 等） | `/api/book/info` → categoryV2 |
+| 总字数 / 阅读量 | `/api/book/info` |
+| 连载状态 / 最新章节 / 最近更新 | `/api/book/info` |
+| 章节上传时间 | `/api/reader/directory/detail` → firstPassTime |
+| 章节字数 | 章节页 SSR → chapterWordNumber（下载时顺带获取） |
+
+用 `--meta` 即可快速查看一本书的全部元数据，无需下载正文。
 
 ## 🛡️ 反封控设计（分层防御）
 
